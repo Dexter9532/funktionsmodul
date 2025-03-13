@@ -1,0 +1,160 @@
+#define F_CPU 16000000UL
+#include <avr/io.h>
+#include <stdint.h>
+
+
+#define MOSI 3
+#define SCK 5
+#define SS 2
+
+
+void execute(uint8_t cmd, uint8_t data){
+
+    PORTB &= ~(1<<SS);
+
+    SPDR = cmd;
+    while(!(SPSR & (1<<SPIF)));
+
+    SPDR = data;
+    while(!(SPSR & (1<<SPIF)));
+
+    PORTB |= (1<<SS);
+}
+
+
+int main(void)
+{
+    DDRB = (1<<MOSI) | (1<<SCK) | (1<<SS);
+    SPCR = (1<<SPE) | (1<<MSTR) | (1<<SPR0);
+
+
+
+    execute(0x09,0b00001111);
+
+    execute(0x0B, 0x03);
+    execute(0x0C, 0x01);
+    execute(0x01, 0x07);
+    execute(0x02, 0x05);
+    execute(0x03, 0x07 | (1<<7));
+    execute(0x04, 0x05);
+
+    while (1) 
+    {
+    }
+}
+#include <avr/io.h>
+#include <stdint.h>
+#include <util/delay.h>
+#include <avr/interrupt.h>
+
+
+#define MOSI PB3
+#define SCK PB5
+#define SS PB2  
+
+uint8_t counter = 0;
+uint8_t buttons_pressed, function;
+
+ISR(PCINT2_vect) {
+    buttons_pressed = ~PIND; // Läs in knapptryckningar
+
+    switch (buttons_pressed) {
+        case 0b00000001: function = 1; break;
+        case 0b00000010: function = 2; break;
+        case 0b00000100: function = 3; break;
+        case 0b00001000: function = 4; break;
+    }
+}
+
+void ADC_init() {
+    ADMUX = (1 << REFS0); // Välj referensspänning AVCC (5V)
+    ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
+    // Aktivera ADC och sätt prescaler till 128 (16MHz/128 = 125kHz ADC-klocka)
+}
+
+uint16_t ADC_read() {
+    ADCSRA |= (1 << ADSC); // Starta ADC-konvertering
+    while (ADCSRA & (1 << ADSC)); // Vänta tills konvertering är klar
+    return ADC; // Returnera 10-bitars ADC-värde (0–1023)
+}
+
+float ADC_getVoltage() {
+    uint16_t adc_value = ADC_read();
+    float voltage = (adc_value * 5.0) / 1023.0; // Beräkna spänning i volt
+    return voltage;
+}
+
+uint8_t get_random_decimal() {
+    uint16_t adc_value = ADC_read(); // Läs ADC (0 - 1023)
+    return (adc_value % 4) + 1; // Mappa till 1–4
+}
+void execute(uint8_t cmd, uint8_t data){
+
+  PORTB &= ~(1<<SS);
+
+  SPDR = cmd;
+  while(!(SPSR & (1<<SPIF)));
+
+  SPDR = data;
+  while(!(SPSR & (1<<SPIF)));
+
+  PORTB |= (1<<SS);
+}
+// SPI-initiering för MAX7221
+void spi_init() {
+
+  DDRB |= (1 << MOSI) | (1 << SCK) | (1 << SS); // Sätt MOSI, SCK och SS som output
+  SPCR = (1 << SPE) | (1 << MSTR) | (1 << SPR0); // Aktivera SPI, Master Mode, 2 MHz klocka
+  
+  execute(0x09, 0xFF); // Decode mode
+  execute(0x0B, 0x07); // Antal displayer
+  execute(0x0C, 0x01); // Slå på MAX7221
+  execute(0x0A, 0x08); // Ställ in medel ljusstyrka (0x00 = mörk, 0x0F = max)
+
+
+}
+
+void setup_interrupts() {
+    cli();
+    PCICR |= (1 << PCIE2);
+    PCMSK2 |= 0xFF;
+    sei();
+}
+
+
+int main(void) {
+
+    DDRD = 0;
+    PORTD = 0xFF; // Aktivera pull-up motstånd på knapparna
+
+
+
+    spi_init();
+    ADC_init();
+    setup_interrupts();
+
+    while (1) {
+
+      execute(0x05,0x03);
+      counter ++;
+      printf("Counter: %d\n", counter);
+        while (function == 0) {
+            
+        }
+        while (function == 1) {
+            get_random_decimal();
+        }
+        while (function == 2) {
+            // Counter
+        }
+        while (function == 3) {
+            // Settings
+        }
+        while (function == 4) {
+            function = 0; // Reset
+        }
+    }
+}
+
+
+
