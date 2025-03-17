@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <avr/eeprom.h>
+
 #define F_CPU 16000000UL  // Processorhastighet (ändra vid behov)
 #define BAUD 9600
 #define UBRR_VALUE ((F_CPU / 16 / BAUD) - 1)
@@ -18,9 +20,11 @@
 
 uint16_t counter = 0;
 uint16_t seconds = 0;
+bool timer_paused = false;
 bool timer_running = false; // 0 = timer av, 1 = timer på
-
-uint8_t buttons_pressed, function, pind_value, last_fuction;
+uint16_t mapping_range [10]= {2, 5, 10, 25, 50, 100, 500, 1000, 5000, 9999};
+uint8_t buttons_pressed, function, pind_value, last_function;
+uint8_t setting = 0;
 
 void uart_init() {
     UBRR0H = (uint8_t)(UBRR_VALUE >> 8); // Ställ in baudrate hög byte
@@ -34,6 +38,14 @@ int uart_putchar(char c, FILE *stream) {
     return 0;
 }
 FILE uart_output = FDEV_SETUP_STREAM(uart_putchar, NULL, _FDEV_SETUP_WRITE);
+
+void save_setting_to_eeprom() {
+    eeprom_update_byte((uint8_t*)0, setting);  // Spara `setting` på adress 0
+}
+void load_setting_from_eeprom() {
+    setting = eeprom_read_byte((uint8_t*)0);  // Läs `setting` från adress 0
+    if (setting > 9) setting = 0; // 🔹 Om EEPROM innehåller skräp, återställ till 0
+}
 
 
 void print_pind_binary() {
@@ -133,7 +145,6 @@ float ADC_getVoltage() {
     return voltage;
 }
 
-uint16_t mapping_range = 100;
 
 uint16_t get_random_decimal() {
     uint16_t adc1 = ADC_read();  // Läs första ADC-värdet (0-1023)
@@ -143,7 +154,7 @@ uint16_t get_random_decimal() {
     uint32_t combined_adc = ((uint32_t)adc1 * adc2) ^ counter; 
 
     // Mappa värdet till önskat intervall
-    uint16_t random_value = (combined_adc % mapping_range) + 1;  
+    uint16_t random_value = (combined_adc % mapping_range[setting]) + 1;  
 
     // Skriver endast ut det slumpmässiga talet och funktionen
     printf("Random number: %d\n", random_value);
@@ -176,14 +187,23 @@ void start_timer() {
     timer_count = 0; // Återställ
     count_direction = 1; // Räkna upp
 }
+void resume_timer() {
+    TCCR1B |= (1 << WGM12); // CTC-läge
+    TCCR1B |= (1 << CS11) | (1 << CS10); // 🔹 Starta timern igen med prescaler 64
+    TIMSK1 |= (1 << OCIE1A); // 🔹 Säkerställ att Timer1 Compare Match Interrupt är aktiverad
+    timer_running = true;
+}
+
 
 void count_down() {
     count_direction = 0; // Räkna ner
 }
 void stop_timer() {
-    TCCR1B &= ~((1 << CS12) | (1 << CS11) | (1 << CS10)); // Stänger av timern genom att nollställa prescalern
-    timer_running = 0; // Nollställ flaggan så att den kan startas igen
+    TCCR1B &= ~((1 << CS12) | (1 << CS11) | (1 << CS10)); // 🔹 Stoppa timern genom att nollställa prescalern
+    TIMSK1 &= ~(1 << OCIE1A); // 🔹 Inaktivera Timer1 Compare Match Interrupt
+    timer_running = false; // Markera att timern är stoppad
 }
+
 
 uint8_t count_minute2, count_minute = 0;
 void display_time (uint16_t time) {
@@ -227,6 +247,10 @@ void spi_init() {
     execute(0x0B,0x07);  //nmr of displays
     execute(0x0C,0x01); // turn on screans
     execute(0x0A,0x05); //intensity
+    execute(0x01, 0);
+    execute(0x02, 0);
+    execute(0x03, 0);
+    execute(0x04, 0);
 }
 void setup_interrupts() {
         cli(); // Stäng av globala avbrott under konfiguration
@@ -239,8 +263,9 @@ void setup_interrupts() {
 
 void update_display() {
         execute(0x08, 0b01000111); // Segment 8: "F"
-        execute(0x07, last_fuction); // Segment 7: "E"
+        execute(0x07, last_function); // Segment 7: "E"
         execute(0x06, 5); // Segment 6: "S"
+        execute(0x05, setting); // Segment 5: "T"
 }
 
 int main(void) {
@@ -253,6 +278,7 @@ int main(void) {
 
     uart_init();  // Initiera UART
     stdout = &uart_output; // Koppla printf() till UART
+    load_setting_from_eeprom();  //  Läs inställning från EEPROM
 
     // Initiera timer
     timer1_init();
@@ -266,31 +292,57 @@ int main(void) {
         update_display();
         printf("Timer: %d\n", seconds);
 
-        if (function == 1 && timer_running == false) { 
-            start_timer();  // Starta timern
-            timer_running = true; // Sätt flaggan så att den inte startar igen
-            last_fuction = function; // Spara funktionen
-            function = 0; // Nollställ funktionen
+        if (function == 1) { 
+            stop_timer();     // Stäng av timern
+            timer_count = 0;  // Nollställ räknare
+            count_minute = 0; // Återställ minuter
+            count_minute2 = 0;
+            timer_running = true; // Markera att timern är på
+            timer_paused = false; // Se till att pausläget är falskt
+            timer1_init();  //  Starta timern direkt igen
+            display_time(timer_count); // Uppdatera display
+            last_function = function;
+            function = 0;
         }
+        
         if(timer_running == true) {
             display_time(seconds); //  Skicka värdet till displayen
             _delay_ms(100); // 100 ms delay
         }
         if (timer_count == 9999) {
             stop_timer(); //  Stoppa timern
-            timer_running = false; //  Nollställ flaggan
         }
-        else if (function == 2) {
-            
+        else if (function == 2) { 
+            if (!timer_paused) {  
+                stop_timer(); // 🔹 PAUSA timern
+                timer_paused = true;
+                printf("Timer paused!\n");
+                last_function = function;
+            } else { 
+                resume_timer(); //  ÅTERSTARTA timern
+                timer_paused = false;
+                printf("Timer resumed!\n");
+                last_function = 1;
+            }
+            function = 0;
         }
+        
+        
         else if(function == 3) {
+            stop_timer();
             uint16_t random_value = get_random_decimal(); //  Läs en gång och spara
             display_number(random_value); //  Skicka värdet till displayen
-            last_fuction = function; //  Nollställ funktionen
+            last_function = function; //  Nollställ funktionen
             function = 0; //  Nollställ funktionen
         }
         else if(function == 4) {
-            last_fuction = function;
+            stop_timer();
+            setting ++;
+            save_setting_to_eeprom();
+            if(setting == 10) {
+                setting = 0;
+            }
+            last_function = function;
             function = 0;
         }
     }
