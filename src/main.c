@@ -7,7 +7,7 @@
 #include <stdbool.h>
 #include <avr/eeprom.h>
 
-#define F_CPU 16000000UL  // Processorhastighet (ändra vid behov)
+#define F_CPU 16000000UL 
 #define BAUD 9600
 #define UBRR_VALUE ((F_CPU / 16 / BAUD) - 1)
 
